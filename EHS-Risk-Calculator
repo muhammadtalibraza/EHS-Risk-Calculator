@@ -1,0 +1,643 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from matplotlib.colors import LinearSegmentedColormap
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import io
+from fpdf import FPDF
+import base64
+from datetime import datetime
+
+# Page configuration
+st.set_page_config(
+    page_title="Risk Matrix Calculator",
+    page_icon="⚠️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS for styling
+def local_css(file_name):
+    with open(file_name) as f:
+        st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
+
+# Create CSS file if it doesn't exist
+css_content = """
+/* Main styles */
+.main {
+    padding: 2rem;
+}
+
+/* Dark mode styles */
+[data-theme="dark"] {
+    --primary-color: #4CAF50;
+    --secondary-color: #2196F3;
+    --background-color: #121212;
+    --card-background: #1E1E1E;
+    --text-color: #FFFFFF;
+    --border-color: #333333;
+}
+
+/* Light mode styles */
+[data-theme="light"] {
+    --primary-color: #2E7D32;
+    --secondary-color: #1565C0;
+    --background-color: #FFFFFF;
+    --card-background: #F5F5F5;
+    --text-color: #000000;
+    --border-color: #DDDDDD;
+}
+
+/* Custom components */
+.stButton>button {
+    background-color: var(--primary-color);
+    color: white;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.stButton>button:hover {
+    opacity: 0.9;
+}
+
+.risk-card {
+    background-color: var(--card-background);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    border-left: 4px solid;
+}
+
+.risk-low {
+    border-left-color: #4CAF50;
+}
+
+.risk-medium {
+    border-left-color: #FFC107;
+}
+
+.risk-high {
+    border-left-color: #FF9800;
+}
+
+.risk-extreme {
+    border-left-color: #F44336;
+}
+
+/* Header styles */
+.header {
+    background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+    color: white;
+    padding: 1rem;
+    border-radius: 8px;
+    margin-bottom: 2rem;
+}
+"""
+
+with open("style.css", "w") as f:
+    f.write(css_content)
+
+local_css("style.css")
+
+# Initialize session state
+if 'hazards' not in st.session_state:
+    st.session_state.hazards = []
+if 'dark_mode' not in st.session_state:
+    st.session_state.dark_mode = False
+
+# Industry templates
+industry_templates = {
+    "General": [],
+    "Construction": [
+        {"name": "Fall from height", "category": "Physical", "default_severity": 5},
+        {"name": "Struck by falling object", "category": "Physical", "default_severity": 4},
+        {"name": "Electrical hazard", "category": "Electrical", "default_severity": 4},
+        {"name": "Machinery accident", "category": "Mechanical", "default_severity": 4},
+        {"name": "Excavation collapse", "category": "Structural", "default_severity": 5}
+    ],
+    "Manufacturing": [
+        {"name": "Machine entanglement", "category": "Mechanical", "default_severity": 5},
+        {"name": "Chemical exposure", "category": "Chemical", "default_severity": 4},
+        {"name": "Noise exposure", "category": "Physical", "default_severity": 3},
+        {"name": "Fire hazard", "category": "Fire", "default_severity": 5},
+        {"name": "Repetitive strain injury", "category": "Ergonomic", "default_severity": 3}
+    ],
+    "Laboratory": [
+        {"name": "Chemical spill", "category": "Chemical", "default_severity": 4},
+        {"name": "Fire/Explosion", "category": "Fire", "default_severity": 5},
+        {"name": "Biological exposure", "category": "Biological", "default_severity": 5},
+        {"name": "Sharp object injury", "category": "Physical", "default_severity": 3},
+        {"name": "Radiation exposure", "category": "Radiation", "default_severity": 5}
+    ],
+    "Healthcare": [
+        {"name": "Needlestick injury", "category": "Biological", "default_severity": 4},
+        {"name": "Pathogen exposure", "category": "Biological", "default_severity": 5},
+        {"name": "Patient handling injury", "category": "Ergonomic", "default_severity": 3},
+        {"name": "Workplace violence", "category": "Psychosocial", "default_severity": 4},
+        {"name": "Chemical exposure", "category": "Chemical", "default_severity": 4}
+    ],
+    "Office": [
+        {"name": "Ergonomic strain", "category": "Ergonomic", "default_severity": 2},
+        {"name": "Slip/Trip/Fall", "category": "Physical", "default_severity": 3},
+        {"name": "Stress", "category": "Psychosocial", "default_severity": 3},
+        {"name": "Electrical hazard", "category": "Electrical", "default_severity": 4},
+        {"name": "Fire hazard", "category": "Fire", "default_severity": 4}
+    ]
+}
+
+# Hazard categories
+hazard_categories = [
+    "Fire", "Chemical", "Electrical", "Biological", 
+    "Ergonomic", "Physical", "Mechanical", "Psychosocial", 
+    "Environmental", "Radiation", "Structural", "Other"
+]
+
+# Control measures suggestions
+control_measures = {
+    "Low": {
+        "general": ["Regular monitoring", "Documentation", "Awareness training"],
+        "Fire": ["Keep fire exits clear", "Maintain fire extinguishers"],
+        "Chemical": ["Ensure proper labeling", "Provide SDS access"],
+        "Electrical": ["Visual inspections", "Proper cable management"],
+        "Biological": ["Basic hygiene protocols", "Waste disposal procedures"]
+    },
+    "Medium": {
+        "general": ["Specific training programs", "Preventive maintenance", "Regular audits"],
+        "Fire": ["Fire safety training", "Install smoke detectors", "Evacuation signs"],
+        "Chemical": ["Spill kits availability", "Ventilation systems", "PPE provision"],
+        "Electrical": ["Regular equipment testing", "Lockout-tagout procedures"],
+        "Biological": ["Personal protective equipment", "Decontamination procedures"]
+    },
+    "High": {
+        "general": ["Engineering controls", "Specialized training", "Emergency procedures"],
+        "Fire": ["Install fire suppression systems", "Conduct fire drills", "Designated fire wardens"],
+        "Chemical": ["Fume hoods", "Specialized storage", "Emergency showers"],
+        "Electrical": ["Arc flash protection", "Regular infrared inspections", "Ground fault protection"],
+        "Biological": ["Containment facilities", "Immunization programs", "Specialized waste handling"]
+    },
+    "Extreme": {
+        "general": ["Elimination or substitution", "Redesign processes", "Continuous monitoring", "Immediate action required"],
+        "Fire": ["Automatic suppression systems", "Fire-resistant construction", "Emergency response team"],
+        "Chemical": ["Process isolation", "Continuous monitoring systems", "Emergency response plan"],
+        "Electrical": ["Complete de-energization procedures", "Remote operation", "Enhanced protective systems"],
+        "Biological": ["Highest level containment", "Specialized training", "Medical surveillance"]
+    }
+}
+
+# Function to calculate risk level
+def calculate_risk_level(probability, severity):
+    risk_score = probability * severity
+    if risk_score <= 4:
+        return "Low", "#4CAF50"  # Green
+    elif risk_score <= 9:
+        return "Medium", "#FFC107"  # Amber
+    elif risk_score <= 16:
+        return "High", "#FF9800"  # Orange
+    else:
+        return "Extreme", "#F44336"  # Red
+
+# Function to add a hazard
+def add_hazard(name, category, probability, severity, notes=""):
+    risk_score = probability * severity
+    risk_level, color = calculate_risk_level(probability, severity)
+    
+    hazard = {
+        "id": len(st.session_state.hazards) + 1,
+        "name": name,
+        "category": category,
+        "probability": probability,
+        "severity": severity,
+        "risk_score": risk_score,
+        "risk_level": risk_level,
+        "color": color,
+        "notes": notes,
+        "date_added": datetime.now().strftime("%Y-%m-%d %H:%M")
+    }
+    
+    st.session_state.hazards.append(hazard)
+    return hazard
+
+# Function to generate PDF report
+def generate_pdf_report():
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(0, 10, "Risk Assessment Report", 0, 1, "C")
+    pdf.ln(10)
+    
+    pdf.set_font("Arial", "", 12)
+    pdf.cell(0, 10, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}", 0, 1)
+    pdf.ln(5)
+    
+    # Add risk matrix image
+    try:
+        risk_matrix_img = create_risk_matrix_plot()
+        risk_matrix_img.savefig("risk_matrix.png")
+        pdf.image("risk_matrix.png", x=10, y=40, w=190)
+        pdf.ln(100)
+    except:
+        pass
+    
+    # Add hazards table
+    pdf.set_font("Arial", "B", 14)
+    pdf.cell(0, 10, "Risk Register", 0, 1)
+    pdf.ln(5)
+    
+    pdf.set_font("Arial", "B", 10)
+    pdf.cell(10, 8, "ID", 1)
+    pdf.cell(50, 8, "Hazard", 1)
+    pdf.cell(30, 8, "Category", 1)
+    pdf.cell(20, 8, "Prob", 1)
+    pdf.cell(20, 8, "Sev", 1)
+    pdf.cell(20, 8, "Score", 1)
+    pdf.cell(30, 8, "Level", 1)
+    pdf.cell(0, 8, "Notes", 1, 1)
+    
+    pdf.set_font("Arial", "", 10)
+    for hazard in st.session_state.hazards:
+        pdf.cell(10, 8, str(hazard["id"]), 1)
+        pdf.cell(50, 8, hazard["name"][:30], 1)
+        pdf.cell(30, 8, hazard["category"], 1)
+        pdf.cell(20, 8, str(hazard["probability"]), 1)
+        pdf.cell(20, 8, str(hazard["severity"]), 1)
+        pdf.cell(20, 8, str(hazard["risk_score"]), 1)
+        pdf.cell(30, 8, hazard["risk_level"], 1)
+        pdf.cell(0, 8, hazard["notes"][:40], 1, 1)
+    
+    # Add recommendations
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 14)
+    pdf.cell(0, 10, "Recommended Control Measures", 0, 1)
+    pdf.ln(5)
+    
+    pdf.set_font("Arial", "", 10)
+    for hazard in st.session_state.hazards:
+        pdf.set_font("Arial", "B", 12)
+        pdf.cell(0, 8, f"{hazard['id']}. {hazard['name']} ({hazard['risk_level']} Risk)", 0, 1)
+        pdf.set_font("Arial", "", 10)
+        
+        # Get general controls for risk level
+        general_controls = control_measures.get(hazard["risk_level"], {}).get("general", [])
+        for control in general_controls:
+            pdf.cell(5, 6)
+            pdf.cell(0, 6, f"- {control}", 0, 1)
+        
+        # Get category-specific controls
+        category_controls = control_measures.get(hazard["risk_level"], {}).get(hazard["category"], [])
+        for control in category_controls:
+            pdf.cell(5, 6)
+            pdf.cell(0, 6, f"- {control}", 0, 1)
+        
+        pdf.ln(3)
+    
+    # Save PDF to bytes buffer
+    pdf_bytes = pdf.output(dest="S").encode("latin1")
+    return pdf_bytes
+
+# Function to create risk matrix plot
+def create_risk_matrix_plot():
+    # Create a 5x5 risk matrix
+    matrix = np.zeros((5, 5))
+    
+    # Fill the matrix with risk scores
+    for i in range(5):
+        for j in range(5):
+            matrix[i][j] = (i+1) * (j+1)
+    
+    # Create custom colormap
+    colors = ["#4CAF50", "#FFC107", "#FF9800", "#F44336"]
+    cmap = LinearSegmentedColormap.from_list("risk_colors", colors, N=4)
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(8, 6))
+    cax = ax.matshow(matrix, cmap=cmap, vmin=1, vmax=25)
+    
+    # Add text annotations
+    for i in range(5):
+        for j in range(5):
+            risk_score = (i+1) * (j+1)
+            ax.text(j, i, f"{risk_score}", ha='center', va='center', 
+                   fontweight='bold', color='white' if risk_score > 12 else 'black')
+    
+    # Set labels
+    ax.set_xticks(np.arange(5))
+    ax.set_yticks(np.arange(5))
+    ax.set_xticklabels([1, 2, 3, 4, 5])
+    ax.set_yticklabels([1, 2, 3, 4, 5])
+    ax.xaxis.set_ticks_position('bottom')
+    
+    plt.xlabel('Probability', fontweight='bold')
+    plt.ylabel('Severity', fontweight='bold')
+    plt.title('Risk Matrix', fontweight='bold')
+    
+    # Add colorbar
+    cbar = fig.colorbar(cax)
+    cbar.set_label('Risk Level', fontweight='bold')
+    
+    return fig
+
+# Function to create risk distribution chart
+def create_risk_distribution_chart():
+    if not st.session_state.hazards:
+        return None
+    
+    risk_levels = [h["risk_level"] for h in st.session_state.hazards]
+    risk_counts = {
+        "Low": risk_levels.count("Low"),
+        "Medium": risk_levels.count("Medium"),
+        "High": risk_levels.count("High"),
+        "Extreme": risk_levels.count("Extreme")
+    }
+    
+    colors = ["#4CAF50", "#FFC107", "#FF9800", "#F44336"]
+    
+    fig = px.pie(
+        values=list(risk_counts.values()),
+        names=list(risk_counts.keys()),
+        color=list(risk_counts.keys()),
+        color_discrete_map={
+            "Low": "#4CAF50",
+            "Medium": "#FFC107",
+            "High": "#FF9800",
+            "Extreme": "#F44336"
+        },
+        title="Distribution of Risk Levels"
+    )
+    
+    fig.update_traces(textposition='inside', textinfo='percent+label')
+    return fig
+
+# Function to create risk trend chart
+def create_risk_trend_chart():
+    if not st.session_state.hazards:
+        return None
+    
+    # Group by date and calculate average risk score
+    df = pd.DataFrame(st.session_state.hazards)
+    df['date_added'] = pd.to_datetime(df['date_added'])
+    df = df.sort_values('date_added')
+    df['cumulative_avg'] = df['risk_score'].expanding().mean()
+    
+    fig = px.line(
+        df, x='date_added', y='cumulative_avg',
+        title='Trend of Average Risk Score Over Time',
+        labels={'date_added': 'Date', 'cumulative_avg': 'Average Risk Score'}
+    )
+    
+    fig.update_traces(line=dict(color='#2196F3', width=3))
+    return fig
+
+# Main app
+def main():
+    # Header
+    st.markdown("""
+    <div class="header">
+        <h1>⚠️ Risk Matrix Calculator</h1>
+        <p>Professional EHS Risk Assessment Tool</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Sidebar
+    with st.sidebar:
+        st.title("Settings")
+        
+        # Dark mode toggle
+        dark_mode = st.toggle("Dark Mode", value=st.session_state.dark_mode)
+        if dark_mode != st.session_state.dark_mode:
+            st.session_state.dark_mode = dark_mode
+            st.rerun()
+        
+        # Industry template selection
+        st.subheader("Industry Templates")
+        selected_industry = st.selectbox(
+            "Select Industry",
+            list(industry_templates.keys()),
+            help="Pre-loaded hazards for specific industries"
+        )
+        
+        if st.button("Load Template Hazards"):
+            st.session_state.hazards = []
+            for hazard in industry_templates[selected_industry]:
+                add_hazard(
+                    hazard["name"],
+                    hazard["category"],
+                    3,  # Default probability
+                    hazard["default_severity"],
+                    "Added from template"
+                )
+            st.success(f"Loaded {len(industry_templates[selected_industry])} hazards from {selected_industry} template")
+        
+        st.divider()
+        
+        # Export options
+        st.subheader("Export Options")
+        
+        if st.button("Generate PDF Report"):
+            if st.session_state.hazards:
+                pdf_bytes = generate_pdf_report()
+                st.download_button(
+                    label="Download PDF Report",
+                    data=pdf_bytes,
+                    file_name=f"risk_assessment_report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                    mime="application/pdf"
+                )
+            else:
+                st.warning("No hazards to export")
+        
+        if st.button("Export to Excel"):
+            if st.session_state.hazards:
+                df = pd.DataFrame(st.session_state.hazards)
+                # Remove color column for Excel export
+                df = df.drop(columns=['color'])
+                
+                towrite = io.BytesIO()
+                df.to_excel(towrite, index=False, engine='openpyxl')
+                towrite.seek(0)
+                
+                st.download_button(
+                    label="Download Excel File",
+                    data=towrite,
+                    file_name=f"risk_register_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else:
+                st.warning("No hazards to export")
+        
+        st.divider()
+        
+        # Clear all button
+        if st.button("Clear All Hazards", type="secondary"):
+            st.session_state.hazards = []
+            st.success("All hazards cleared")
+    
+    # Main content - two columns
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        st.subheader("Add New Hazard")
+        
+        with st.form("hazard_form"):
+            hazard_name = st.text_input("Hazard Name*", placeholder="E.g., Chemical spill in lab")
+            hazard_category = st.selectbox("Category*", hazard_categories)
+            
+            col_prob, col_sev = st.columns(2)
+            with col_prob:
+                probability = st.slider("Probability (1-5)*", 1, 5, 3, 
+                                       help="1: Very Unlikely, 5: Very Likely")
+            with col_sev:
+                severity = st.slider("Severity (1-5)*", 1, 5, 3, 
+                                    help="1: Minor, 5: Catastrophic")
+            
+            notes = st.text_area("Additional Notes", placeholder="Any additional details about the hazard...")
+            
+            submitted = st.form_submit_button("Add Hazard", type="primary")
+            
+            if submitted:
+                if hazard_name and hazard_category:
+                    hazard = add_hazard(hazard_name, hazard_category, probability, severity, notes)
+                    risk_level = hazard["risk_level"]
+                    
+                    st.success(f"Hazard added! Risk Score: {hazard['risk_score']} ({risk_level} Risk)")
+                    
+                    # Show control measures suggestions
+                    with st.expander("Recommended Control Measures"):
+                        st.write("**General measures:**")
+                        for measure in control_measures[risk_level]["general"]:
+                            st.write(f"- {measure}")
+                        
+                        st.write(f"**{hazard_category}-specific measures:**")
+                        category_measures = control_measures[risk_level].get(hazard_category, [])
+                        if category_measures:
+                            for measure in category_measures:
+                                st.write(f"- {measure}")
+                        else:
+                            st.info(f"No category-specific measures available for {hazard_category}")
+                else:
+                    st.error("Please provide a hazard name and category")
+    
+    with col2:
+        st.subheader("Risk Matrix Visualization")
+        
+        # Create risk matrix
+        risk_matrix_fig = create_risk_matrix_plot()
+        st.pyplot(risk_matrix_fig)
+        
+        # Add current hazards to the matrix if any
+        if st.session_state.hazards:
+            hazard_points_fig = go.Figure()
+            
+            # Add risk matrix background
+            for i in range(5):
+                for j in range(5):
+                    risk_score = (i+1) * (j+1)
+                    risk_level, color = calculate_risk_level(i+1, j+1)
+                    
+                    hazard_points_fig.add_trace(go.Scatter(
+                        x=[j], y=[i],
+                        mode='markers',
+                        marker=dict(size=30, color=color, opacity=0.3),
+                        showlegend=False,
+                        hoverinfo='skip'
+                    ))
+            
+            # Add hazard points
+            for hazard in st.session_state.hazards:
+                hazard_points_fig.add_trace(go.Scatter(
+                    x=[hazard["probability"]-1], y=[hazard["severity"]-1],
+                    mode='markers+text',
+                    marker=dict(size=20, color=hazard["color"]),
+                    text=[str(hazard["id"])],
+                    textposition="middle center",
+                    name=f"{hazard['id']}. {hazard['name']}",
+                    hoverinfo='text',
+                    hovertext=f"ID: {hazard['id']}<br>Name: {hazard['name']}<br>Score: {hazard['risk_score']}<br>Level: {hazard['risk_level']}"
+                ))
+            
+            hazard_points_fig.update_layout(
+                xaxis=dict(
+                    tickmode='array',
+                    tickvals=[0, 1, 2, 3, 4],
+                    ticktext=['1', '2', '3', '4', '5'],
+                    title='Probability'
+                ),
+                yaxis=dict(
+                    tickmode='array',
+                    tickvals=[0, 1, 2, 3, 4],
+                    ticktext=['1', '2', '3', '4', '5'],
+                    title='Severity'
+                ),
+                title='Hazards on Risk Matrix',
+                width=600,
+                height=500,
+                showlegend=False
+            )
+            
+            st.plotly_chart(hazard_points_fig)
+    
+    # Risk register table
+    st.subheader("Risk Register")
+    
+    if st.session_state.hazards:
+        # Sort hazards by risk score (descending)
+        sorted_hazards = sorted(st.session_state.hazards, key=lambda x: x["risk_score"], reverse=True)
+        
+        for hazard in sorted_hazards:
+            risk_class = f"risk-{hazard['risk_level'].lower()}"
+            
+            st.markdown(f"""
+            <div class="risk-card {risk_class}">
+                <div style="display: flex; justify-content: space-between;">
+                    <h3 style="margin: 0;">{hazard['name']} (ID: {hazard['id']})</h3>
+                    <span style="background-color: {hazard['color']}; color: white; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: bold;">
+                        {hazard['risk_level']} Risk (Score: {hazard['risk_score']})
+                    </span>
+                </div>
+                <p style="margin: 0.5rem 0;"><strong>Category:</strong> {hazard['category']} | 
+                <strong>Probability:</strong> {hazard['probability']} | 
+                <strong>Severity:</strong> {hazard['severity']}</p>
+                <p style="margin: 0;"><strong>Notes:</strong> {hazard['notes']}</p>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.info("No hazards added yet. Use the form on the left to add hazards.")
+    
+    # Dashboard visualizations
+    if st.session_state.hazards:
+        st.subheader("Risk Dashboard")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            dist_fig = create_risk_distribution_chart()
+            if dist_fig:
+                st.plotly_chart(dist_fig, use_container_width=True)
+        
+        with col2:
+            trend_fig = create_risk_trend_chart()
+            if trend_fig:
+                st.plotly_chart(trend_fig, use_container_width=True)
+        
+        # Risk by category chart
+        cat_fig = px.bar(
+            pd.DataFrame(st.session_state.hazards),
+            x='category',
+            color='risk_level',
+            color_discrete_map={
+                "Low": "#4CAF50",
+                "Medium": "#FFC107",
+                "High": "#FF9800",
+                "Extreme": "#F44336"
+            },
+            title="Risks by Category",
+            labels={'category': 'Category', 'count': 'Number of Hazards'}
+        )
+        st.plotly_chart(cat_fig, use_container_width=True)
+
+if __name__ == "__main__":
+    main()
